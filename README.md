@@ -8,7 +8,7 @@
 дубли по `<g:title>` и публикует очищенную версию (~528 товаров) с правильно
 заполненным `<g:item_group_id>` и `<g:size>` для Meta.
 
-**URL очищенного фида:** `https://<USERNAME>.github.io/raptor-feed-cleaner/feed.xml`
+**URL очищенного фида:** `https://killertrafic-lgtm.github.io/raptor-feed-cleaner/feed.xml`
 
 ## Как работает
 
@@ -27,7 +27,7 @@
 
 1. Открыть [Meta Commerce Manager](https://business.facebook.com/commerce_manager/)
 2. Каталог → **Data Sources** → **Add items** → **Use bulk upload** → **Scheduled feed**
-3. Вставить URL: `https://<USERNAME>.github.io/raptor-feed-cleaner/feed.xml`
+3. Вставить URL: `https://killertrafic-lgtm.github.io/raptor-feed-cleaner/feed.xml`
 4. Поставить **Update hourly**
 
 ## Ручной запуск
