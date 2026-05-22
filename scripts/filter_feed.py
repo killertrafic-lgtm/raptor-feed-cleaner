@@ -9,12 +9,15 @@ Raptor-UA Feed Cleaner
 Логика дедупликации:
 1. Парсим SKU: ^(\d+)([A-Za-z]+)?(\d+)?$ → (model, size, variant)
    Пример: "010S19" → model="010", size="S", variant="19"
-2. Группируем товары по полному <g:title> — это "один товар"
+2. Группируем товары по ключу (title, model_id) — это "одна уникальная модель"
+   У клиента в Horoshop разные модели часто имеют идентичный <g:title>, поэтому одна
+   только группировка по title слишком агрессивна (схлопывает 62 шлема в 27).
+   Добавление model_id из артикула различает их.
 3. Из каждой группы оставляем ОДНОГО представителя:
+   - Приоритет варианта комплектации: минимальный variant первый ("1" = базовая)
    - Приоритет размера: M → L → XL → S → (первый по сортировке если нет ни одного из них)
-   - Внутри размера: минимальный variant ("1" = базовая комплектация)
 4. Добавляем поля для Meta:
-   - <g:item_group_id> = md5(title)[:10] — стабильный идентификатор группы
+   - <g:item_group_id> = md5(title+model_id)[:10] — стабильный идентификатор группы
    - <g:size>          = размер выбранного представителя (если есть)
 
 Safety check: если после фильтрации товаров < 50, фид не публикуется,
@@ -66,9 +69,10 @@ def size_sort_key(size: str) -> int:
     return SIZE_PRIORITY.get(size.upper(), 99)
 
 
-def stable_group_id(title: str) -> str:
-    """Стабильный 10-символьный hash от title — пригоден для item_group_id."""
-    return hashlib.md5(title.encode("utf-8")).hexdigest()[:10]
+def stable_group_id(title: str, model_id: str = "") -> str:
+    """Стабильный 10-символьный hash от (title + model_id) — пригоден для item_group_id."""
+    key = f"{title}|{model_id}"
+    return hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
 
 
 def download_feed(url: str) -> bytes:
@@ -102,8 +106,11 @@ def filter_feed(xml_bytes: bytes) -> tuple[ET.ElementTree, dict]:
     items = channel.findall("item")
     original_count = len(items)
 
-    # 1. Группируем по полному <g:title> — это "один товар"
-    groups: dict[str, list[tuple[str, str, ET.Element]]] = defaultdict(list)
+    # 1. Группируем по (title, model_id) — "одна уникальная модель".
+    # model_id — это первая числовая часть артикула (например "010" из "010S19").
+    # Это различает модели, у которых одинаковый <g:title> в Horoshop, но
+    # реально это разные товары на сайте с разными артикулами.
+    groups: dict[tuple[str, str], list[tuple[str, str, ET.Element]]] = defaultdict(list)
     for it in items:
         sku_el = it.find(f"{{{NS}}}id")
         title_el = it.find(f"{{{NS}}}title")
@@ -111,20 +118,18 @@ def filter_feed(xml_bytes: bytes) -> tuple[ET.ElementTree, dict]:
             continue
         sku = (sku_el.text or "").strip()
         title = (title_el.text or "").strip()
-        _, size, variant = parse_sku(sku)
-        groups[title].append((size, variant, it))
+        model_id, size, variant = parse_sku(sku)
+        groups[(title, model_id)].append((size, variant, it))
 
     # 2. Из каждой группы — ОДИН представитель.
-    # Сортируем кандидатов: сначала по приоритету размера (M первый),
-    # затем по variant (минимальный variant первый).
+    # Приоритет: variant=1 (базовая комплектация) > минимальный variant.
+    # Внутри одного variant: размер по приоритету M → L → XL → S.
     kept_items: list[ET.Element] = []
-    for title, candidates in groups.items():
-        candidates.sort(key=lambda c: (size_sort_key(c[0]), variant_sort_key(c[1])))
+    for (title, model_id), candidates in groups.items():
+        candidates.sort(key=lambda c: (variant_sort_key(c[1]), size_sort_key(c[0])))
         chosen_size, chosen_variant, chosen_item = candidates[0]
-        # Добавляем item_group_id (стабильный hash от title) — на случай если в будущем
-        # вернёмся к показу всех размеров, группа останется консистентной
-        add_or_replace(chosen_item, "item_group_id", stable_group_id(title))
-        # Добавляем size если он реально S/M/L/XL
+        # item_group_id стабилен в пределах (title + model_id) — одна модель
+        add_or_replace(chosen_item, "item_group_id", stable_group_id(title, model_id))
         if chosen_size:
             add_or_replace(chosen_item, "size", chosen_size)
         kept_items.append(chosen_item)
