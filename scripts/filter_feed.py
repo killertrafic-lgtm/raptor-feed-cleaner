@@ -3,18 +3,19 @@ r"""
 Raptor-UA Feed Cleaner
 
 Скачивает оригинальный Google Shopping фид с raptor-ua.com, схлопывает
-дубли (товары с идентичным <g:title>), оставляет варианты размеров через
-<g:item_group_id>, и сохраняет очищенный фид в docs/feed.xml для публикации
-через GitHub Pages.
+дубли (товары с идентичным <g:title>) до ОДНОГО представителя на товар,
+и сохраняет очищенный фид в docs/feed.xml для публикации через GitHub Pages.
 
 Логика дедупликации:
 1. Парсим SKU: ^(\d+)([A-Za-z]+)?(\d+)?$ → (model, size, variant)
    Пример: "010S19" → model="010", size="S", variant="19"
-2. Группируем товары по ключу (title, size) — это значит "тот же товар того же размера"
-3. Из каждой группы оставляем артикул с минимальным variant (обычно "1" = базовая комплектация)
+2. Группируем товары по полному <g:title> — это "один товар"
+3. Из каждой группы оставляем ОДНОГО представителя:
+   - Приоритет размера: M → L → XL → S → (первый по сортировке если нет ни одного из них)
+   - Внутри размера: минимальный variant ("1" = базовая комплектация)
 4. Добавляем поля для Meta:
-   - <g:item_group_id> = md5(title)[:10] — стабильный идентификатор группы вариаций
-   - <g:size>          = S / M / L / XL — извлечён из артикула
+   - <g:item_group_id> = md5(title)[:10] — стабильный идентификатор группы
+   - <g:size>          = размер выбранного представителя (если есть)
 
 Safety check: если после фильтрации товаров < 50, фид не публикуется,
 сохраняется предыдущая версия (защита от битого оригинального фида).
@@ -38,6 +39,10 @@ NS_MAP = {"g": NS}
 
 SKU_RE = re.compile(r"^(\d+)([A-Za-z]+)?(\d+)?$")
 
+# Приоритет размеров для выбора "главного" варианта в группе.
+# Меньший индекс = выше приоритет. M — самый ходовой размер у взрослых.
+SIZE_PRIORITY = {"M": 0, "L": 1, "XL": 2, "S": 3, "XXL": 4, "XS": 5}
+
 
 def parse_sku(sku: str):
     """Парсит '010S19' → ('010', 'S', '19'). Если не матчится — возвращает (sku, '', '')."""
@@ -52,6 +57,13 @@ def variant_sort_key(variant: str) -> int:
     if variant.isdigit():
         return int(variant)
     return 10**9  # нечисловые варианты в конец
+
+
+def size_sort_key(size: str) -> int:
+    """Приоритет: M < L < XL < S < остальные. Меньший индекс = выше приоритет для выбора."""
+    if not size:
+        return 100  # товары без размера — нейтральный приоритет
+    return SIZE_PRIORITY.get(size.upper(), 99)
 
 
 def stable_group_id(title: str) -> str:
@@ -90,8 +102,8 @@ def filter_feed(xml_bytes: bytes) -> tuple[ET.ElementTree, dict]:
     items = channel.findall("item")
     original_count = len(items)
 
-    # 1. Группируем по (title, size)
-    groups: dict[tuple[str, str], list[tuple[str, ET.Element]]] = defaultdict(list)
+    # 1. Группируем по полному <g:title> — это "один товар"
+    groups: dict[str, list[tuple[str, str, ET.Element]]] = defaultdict(list)
     for it in items:
         sku_el = it.find(f"{{{NS}}}id")
         title_el = it.find(f"{{{NS}}}title")
@@ -100,18 +112,21 @@ def filter_feed(xml_bytes: bytes) -> tuple[ET.ElementTree, dict]:
         sku = (sku_el.text or "").strip()
         title = (title_el.text or "").strip()
         _, size, variant = parse_sku(sku)
-        groups[(title, size)].append((variant, it))
+        groups[title].append((size, variant, it))
 
-    # 2. Из каждой группы — минимальный variant
+    # 2. Из каждой группы — ОДИН представитель.
+    # Сортируем кандидатов: сначала по приоритету размера (M первый),
+    # затем по variant (минимальный variant первый).
     kept_items: list[ET.Element] = []
-    for (title, size), candidates in groups.items():
-        candidates.sort(key=lambda c: variant_sort_key(c[0]))
-        chosen_variant, chosen_item = candidates[0]
-        # Добавляем item_group_id (стабильный hash от title)
+    for title, candidates in groups.items():
+        candidates.sort(key=lambda c: (size_sort_key(c[0]), variant_sort_key(c[1])))
+        chosen_size, chosen_variant, chosen_item = candidates[0]
+        # Добавляем item_group_id (стабильный hash от title) — на случай если в будущем
+        # вернёмся к показу всех размеров, группа останется консистентной
         add_or_replace(chosen_item, "item_group_id", stable_group_id(title))
-        # Добавляем size (только если он реально S/M/L/XL и т.п.)
-        if size:
-            add_or_replace(chosen_item, "size", size)
+        # Добавляем size если он реально S/M/L/XL
+        if chosen_size:
+            add_or_replace(chosen_item, "size", chosen_size)
         kept_items.append(chosen_item)
 
     # 3. Удаляем все старые <item> и вставляем отфильтрованные
@@ -123,7 +138,7 @@ def filter_feed(xml_bytes: bytes) -> tuple[ET.ElementTree, dict]:
     stats = {
         "original": original_count,
         "filtered": len(kept_items),
-        "groups": len(set(stable_group_id(title) for (title, _) in groups)),
+        "groups": len(groups),
         "ratio": f"{len(kept_items) / original_count * 100:.1f}%" if original_count else "0%",
     }
     return ET.ElementTree(root), stats
