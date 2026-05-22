@@ -1,0 +1,48 @@
+name: Update filtered feed
+
+on:
+  schedule:
+    # Каждый час в :00 (UTC). Скачать → отфильтровать → закоммитить.
+    - cron: '0 * * * *'
+  # Можно запустить вручную из вкладки Actions
+  workflow_dispatch:
+  # И при пуше — для проверки что workflow рабочий
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/**'
+
+permissions:
+  contents: write  # нужно чтобы actions мог коммитить обратно
+
+concurrency:
+  group: update-feed
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run filter script
+        run: python scripts/filter_feed.py
+
+      - name: Commit & push if feed changed
+        run: |
+          if git diff --quiet docs/feed.xml; then
+            echo "Фид без изменений — коммит не нужен."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add docs/feed.xml
+            git commit -m "Auto-update filtered feed [$(date -u +'%Y-%m-%d %H:%M UTC')]"
+            git push
+          fi
