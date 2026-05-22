@@ -46,6 +46,55 @@ SKU_RE = re.compile(r"^(\d+)([A-Za-z]+)?(\d+)?$")
 # Меньший индекс = выше приоритет. M — самый ходовой размер у взрослых.
 SIZE_PRIORITY = {"M": 0, "L": 1, "XL": 2, "S": 3, "XXL": 4, "XS": 5}
 
+# Маппинг наших категорий (g:product_type) в стандартную Google Product Taxonomy.
+# Проверяется по ключевому слову в product_type, первое совпадение побеждает.
+# Порядок важен: более специфичные паттерны идут раньше общих.
+# Полная таксономия: https://www.google.com/basepages/producttype/taxonomy.en-US.txt
+GOOGLE_CATEGORY_MAP = [
+    ("Тепловіз",       "Cameras & Optics > Optics > Monoculars"),
+    ("Оптика",         "Cameras & Optics > Optics > Binoculars"),
+    ("Бронеплит",      "Sporting Goods > Outdoor Recreation > Hunting & Shooting"),
+    ("Плитонос",       "Sporting Goods > Outdoor Recreation > Hunting & Shooting"),
+    ("Підсум",         "Luggage & Bags > Backpacks"),
+    ("Аксесуари",      "Sporting Goods > Outdoor Recreation > Hunting & Shooting"),
+    ("Шолом",          "Apparel & Accessories > Costumes & Accessories"),
+    ("Бронежилет",     "Apparel & Accessories > Costumes & Accessories"),
+    ("Черевик",        "Apparel & Accessories > Shoes"),
+    ("Взуття",         "Apparel & Accessories > Shoes"),
+    ("Тактичні штани", "Apparel & Accessories > Clothing > Pants"),
+    ("Зимові штани",   "Apparel & Accessories > Clothing > Pants"),
+    ("Штани",          "Apparel & Accessories > Clothing > Pants"),
+    ("Шорти",          "Apparel & Accessories > Clothing > Shorts"),
+    ("Куртки",         "Apparel & Accessories > Clothing > Outerwear > Coats & Jackets"),
+    ("Вітровки",       "Apparel & Accessories > Clothing > Outerwear > Coats & Jackets"),
+    ("Костюм",         "Apparel & Accessories > Clothing > Suits"),
+    ("Зимові",         "Apparel & Accessories > Clothing > Outerwear"),
+    ("ЗИМОВИЙ",        "Apparel & Accessories > Clothing > Outerwear"),
+    ("Фліс",           "Apparel & Accessories > Clothing > Activewear"),
+    ("Бейсболк",       "Apparel & Accessories > Clothing Accessories > Hats"),
+    ("Шапк",           "Apparel & Accessories > Clothing Accessories > Hats"),
+    ("Панам",          "Apparel & Accessories > Clothing Accessories > Hats"),
+    ("Головні убори",  "Apparel & Accessories > Clothing Accessories > Hats"),
+    ("Сорочк",         "Apparel & Accessories > Clothing > Shirts & Tops"),
+    ("Футболк",        "Apparel & Accessories > Clothing > Shirts & Tops"),
+    ("Убакс",          "Apparel & Accessories > Clothing > Shirts & Tops"),
+    ("UBACS",          "Apparel & Accessories > Clothing > Shirts & Tops"),
+    ("Поло",           "Apparel & Accessories > Clothing > Shirts & Tops"),
+    ("Літній одяг",    "Apparel & Accessories > Clothing"),
+    ("Тактичний одяг", "Apparel & Accessories > Clothing"),
+]
+
+
+def map_to_google_category(product_type: str) -> str:
+    """Возвращает Google Product Taxonomy по ключевым словам в product_type.
+    Если не нашли — пусто (Meta тогда не будет проставлять категорию)."""
+    if not product_type:
+        return ""
+    for keyword, gpc in GOOGLE_CATEGORY_MAP:
+        if keyword.lower() in product_type.lower():
+            return gpc
+    return ""
+
 
 def parse_sku(sku: str):
     """Парсит '010S19' → ('010', 'S', '19'). Если не матчится — возвращает (sku, '', '')."""
@@ -132,6 +181,12 @@ def filter_feed(xml_bytes: bytes) -> tuple[ET.ElementTree, dict]:
         add_or_replace(chosen_item, "item_group_id", stable_group_id(title, model_id))
         if chosen_size:
             add_or_replace(chosen_item, "size", chosen_size)
+        # Добавляем Google Product Taxonomy — для фильтрации в Meta Commerce Manager
+        pt_el = chosen_item.find(f"{{{NS}}}product_type")
+        if pt_el is not None and pt_el.text:
+            gpc = map_to_google_category(pt_el.text)
+            if gpc:
+                add_or_replace(chosen_item, "google_product_category", gpc)
         kept_items.append(chosen_item)
 
     # 3. Удаляем все старые <item> и вставляем отфильтрованные
